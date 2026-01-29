@@ -11,7 +11,8 @@ on:
 jobs:
   wake-up-codespace:
     runs-on: ubuntu-latest
-    if: ${{ github.event.schedule == '22 7 * * *' }}  # 只在7:22执行唤醒任务
+    # 在手动触发或定时触发时都运行
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '22 7 * * *' }}
     
     steps:
     - name: Wake up Codespace
@@ -48,7 +49,8 @@ jobs:
 
   weather-alert:
     runs-on: ubuntu-latest
-    if: ${{ github.event.schedule == '30 7 * * *' }}  # 只在7:30执行天气预报任务
+    # 在手动触发或定时触发时都运行
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '30 7 * * *' }}
     
     steps:
     - name: Set timezone and check date
