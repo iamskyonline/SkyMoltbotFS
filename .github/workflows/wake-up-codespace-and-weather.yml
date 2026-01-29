@@ -1,10 +1,10 @@
-name: Wake Up Codespace and Weather Alert
+name: Wake Up Codespace, Weather Alert and Todo Summary
 
 on:
   schedule:
     # 每天早上7:22 UTC运行，唤醒Codespace
     - cron: '22 7 * * *'
-    # 每天早上7:30 UTC运行，执行天气预报（此时Codespace应该已被唤醒）
+    # 每天早上7:30 UTC运行，执行天气预报和待办事项汇总（此时Codespace应该已被唤醒）
     - cron: '30 7 * * *'
   workflow_dispatch: # 允许手动触发
 
@@ -47,7 +47,7 @@ jobs:
           fi
         done
 
-  weather-alert:
+  weather-and-todo-alert:
     runs-on: ubuntu-latest
     # 在手动触发或定时触发时都运行
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '30 7 * * *' }}
@@ -93,7 +93,46 @@ jobs:
         # 保存到文件以便进一步处理
         echo "$FULL_FORECAST" > weather_report.txt
         
-    - name: Process and Display Weather Report
+    - name: Get Pending Todos from Todo App
+      id: get_todos
+      run: |
+        # 从Todo应用获取待办事项
+        TODO_APP_URL="${{ secrets.CODESPACE_URL }}"
+        # 将URL转换为端口3000的格式，用于访问Todo应用
+        TODO_APP_API="${TODO_APP_URL/18789/3000}/api/todos/pending"
+        
+        echo "Fetching pending todos from: $TODO_APP_API"
+        
+        # 尝试获取待办事项，设置超时
+        TIMEOUT_SECONDS=10
+        COUNT=0
+        MAX_COUNT=3
+        
+        while [ $COUNT -lt $MAX_COUNT ]; do
+          TODO_RESPONSE=$(curl -s --max-time $TIMEOUT_SECONDS "$TODO_APP_API" -w "\nHTTP_CODE:%{http_code}")
+          HTTP_CODE=$(echo "$TODO_RESPONSE" | tail -n1 | cut -d: -f2)
+          TODO_DATA=$(echo "$TODO_RESPONSE" | sed '$d')  # 移除最后一行HTTP_CODE
+        
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Successfully fetched todos"
+            echo "pending_todos=$TODO_DATA" >> $GITHUB_OUTPUT
+            echo "$TODO_DATA" > pending_todos.json
+            break
+          else
+            echo "Failed to fetch todos, HTTP code: $HTTP_CODE"
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -lt $MAX_COUNT ]; then
+              echo "Retrying in 5 seconds... ($COUNT/$MAX_COUNT)"
+              sleep 5
+            else
+              echo "Failed to fetch todos after $MAX_COUNT attempts"
+              echo "pending_todos=[]" >> $GITHUB_OUTPUT
+              echo "[]" > pending_todos.json
+            fi
+          fi
+        done
+        
+    - name: Process and Display Combined Report
       run: |
         echo "==============================================="
         echo "🌤️【${{ env.CITY_DISPLAY }}天气预报】"
@@ -118,10 +157,25 @@ jobs:
           echo "$TOMORROW"
         fi
         echo ""
+        
+        # 显示待办事项
+        echo "📋【今日待办事项】"
+        PENDING_TODOS=$(cat pending_todos.json)
+        TODO_COUNT=$(echo "$PENDING_TODOS" | jq -r 'length' 2>/dev/null || echo "0")
+        
+        if [ "$TODO_COUNT" = "0" ] || [ "$PENDING_TODOS" = "null" ]; then
+          echo "🎉 没有待办事项，享受美好的一天吧！"
+        else
+          echo "您有 $TODO_COUNT 项待办任务："
+          echo "$PENDING_TODOS" | jq -r '.[] | "• \(.text)"' 2>/dev/null || echo "无法解析待办事项数据"
+        fi
+        echo ""
         echo "==============================================="
         
-    - name: Archive Weather Report
+    - name: Archive Reports
       uses: actions/upload-artifact@v4
       with:
-        name: weather-report-${{ env.DATE_TODAY }}
-        path: weather_report.txt
+        name: daily-report-${{ env.DATE_TODAY }}
+        path: |
+          weather_report.txt
+          pending_todos.json
