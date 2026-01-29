@@ -1,0 +1,125 @@
+name: Wake Up Codespace and Weather Alert
+
+on:
+  schedule:
+    # 每天早上7:22 UTC运行，唤醒Codespace
+    - cron: '22 7 * * *'
+    # 每天早上7:30 UTC运行，执行天气预报（此时Codespace应该已被唤醒）
+    - cron: '30 7 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  wake-up-codespace:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.schedule == '22 7 * * *' }}  # 只在7:22执行唤醒任务
+    
+    steps:
+    - name: Wake up Codespace
+      run: |
+        # 检查是否配置了Codespace URL
+        if [ -z "${{ secrets.CODESPACE_URL }}" ]; then
+          echo "CODESPACE_URL secret not configured. Please set it in repository secrets."
+          echo "Example: https://your-codespace-name-3000.app.github.dev"
+          exit 1
+        fi
+        
+        echo "Attempting to wake up Codespace at ${{ secrets.CODESPACE_URL }}"
+        
+        # 尝试访问Codespace主页，最多重试3次
+        for i in {1..3}; do
+          echo "Attempt $i to wake up Codespace..."
+          RESPONSE=$(curl -s -o response_body.txt -w "%{http_code}" "${{ secrets.CODESPACE_URL }}")
+          
+          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "404" ]; then
+            echo "Codespace responded with HTTP $RESPONSE - considered awake"
+            cat response_body.txt
+            break
+          else
+            echo "Attempt $i failed with HTTP $RESPONSE"
+            cat response_body.txt
+            if [ $i -lt 3 ]; then
+              echo "Waiting 30 seconds before retry..."
+              sleep 30
+            else
+              echo "All attempts to wake up Codespace failed"
+            fi
+          fi
+        done
+
+  weather-alert:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.schedule == '30 7 * * *' }}  # 只在7:30执行天气预报任务
+    
+    steps:
+    - name: Set timezone and check date
+      run: |
+        # 设置为北京时间
+        echo "TZ=Asia/Shanghai" >> $GITHUB_ENV
+        echo "DATE_TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)" >> $GITHUB_ENV
+        
+    - name: Determine weather location based on schedule
+      run: |
+        # 检查当前日期，决定是否还在防城港天气预报期间（截至2026-02-05）
+        CURRENT_DATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+        END_DATE="2026-02-05"
+        
+        if [[ "$CURRENT_DATE" < "$END_DATE" ]]; then
+          echo "Sending Fangchenggang weather (temporary period)"
+          echo "CITY_URL=防城港" >> $GITHUB_ENV
+          echo "CITY_DISPLAY=广西防城港" >> $GITHUB_ENV
+        else
+          echo "Sending Shanghai weather (default location)"
+          echo "CITY_URL=上海" >> $GITHUB_ENV
+          echo "CITY_DISPLAY=上海" >> $GITHUB_ENV
+        fi
+        echo "Weather location: ${{ env.CITY_DISPLAY }}"
+        
+    - name: Get Detailed Weather Information
+      id: get_weather
+      run: |
+        # 获取指定城市的详细天气预报
+        # 当前天气
+        CURRENT_WEATHER=$(curl -s "wttr.in/${{ env.CITY_URL }}?format=1&lang=zh")
+        echo "current_weather=$CURRENT_WEATHER" >> $GITHUB_OUTPUT
+        
+        # 获取完整预报
+        FULL_FORECAST=$(curl -s "wttr.in/${{ env.CITY_URL }}?T&lang=zh")
+        echo "full_forecast<<EOF" >> $GITHUB_OUTPUT
+        echo "$FULL_FORECAST" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        # 保存到文件以便进一步处理
+        echo "$FULL_FORECAST" > weather_report.txt
+        
+    - name: Process and Display Weather Report
+      run: |
+        echo "==============================================="
+        echo "🌤️【${{ env.CITY_DISPLAY }}天气预报】"
+        echo "🕐 时间: $(TZ=Asia/Shanghai date '+%Y年%m月%d日 %H:%M')"
+        echo "==============================================="
+        echo "当前天气: ${{ steps.get_weather.outputs.current_weather }}"
+        echo ""
+        
+        # 提取关键信息
+        TEMP_LINE=$(grep -A 10 "天气预报:" weather_report.txt | head -n 5)
+        echo "🌡️ 温度详情:"
+        echo "$TEMP_LINE"
+        echo ""
+        
+        # 明天预报
+        TOMORROW=$(sed -n '/.*星期五.*/,/.*星期六.*/p' weather_report.txt | head -n -1)
+        if [ -z "$TOMORROW" ]; then
+          TOMORROW=$(sed -n '/.*Friday.*/,/.*Saturday.*/p' weather_report.txt | head -n -1)
+        fi
+        if [ ! -z "$TOMORROW" ]; then
+          echo "📅 明天预报:"
+          echo "$TOMORROW"
+        fi
+        echo ""
+        echo "==============================================="
+        
+    - name: Archive Weather Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: weather-report-${{ env.DATE_TODAY }}
+        path: weather_report.txt
